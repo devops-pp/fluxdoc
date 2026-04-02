@@ -171,9 +171,11 @@ resources:
   - configmap.yaml
 
 # Add common labels to ALL resources
-commonLabels:
-  managed-by: kustomize
-  team: platform
+labels:
+  - pairs:
+      managed-by: kustomize
+      team: platform
+    includeSelectors: false
 ```
 
 ---
@@ -198,7 +200,7 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 # Point to base
-bases:
+resources:
   - ../../base
 
 # Add dev namespace
@@ -208,8 +210,10 @@ namespace: dev
 namePrefix: dev-
 
 # Add dev-specific labels
-commonLabels:
-  environment: dev
+labels:
+  - pairs:
+      environment: dev
+    includeSelectors: false
 
 # Override ConfigMap values
 configMapGenerator:
@@ -267,14 +271,16 @@ spec:
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
-bases:
+resources:
   - ../../base
 
 namespace: staging
 namePrefix: staging-
 
-commonLabels:
-  environment: staging
+labels:
+  - pairs:
+      environment: staging
+    includeSelectors: false
 
 configMapGenerator:
   - name: my-app-config
@@ -354,14 +360,17 @@ spec:
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
-bases:
+resources:
   - ../../base
+  - patch-hpa.yaml
 
 namespace: production
 namePrefix: prod-
 
-commonLabels:
-  environment: production
+labels:
+  - pairs:
+      environment: production
+    includeSelectors: false
 
 configMapGenerator:
   - name: my-app-config
@@ -370,10 +379,6 @@ configMapGenerator:
       - APP_ENV=production
       - LOG_LEVEL=error
       - MAX_CONNECTIONS=500
-
-# Production also adds an HPA
-resources:
-  - patch-hpa.yaml
 
 patches:
   - path: patch-replicas.yaml
@@ -542,5 +547,41 @@ kind delete cluster --name kustomize-demo
 | `patches` | Strategic merge patches override only what you specify |
 | `images` | Swap image tags per environment without editing manifests |
 | `components` | Reusable add-ons (e.g., monitoring) included selectively |
+| `labels` (not `commonLabels`) | Adds labels without mutating selectors — use `includeSelectors: false` |
+| `resources` (not `bases`) | Declares base and additional resources — `bases` is deprecated |
 
 > **Golden Rule:** `base/` should work standalone. `overlays/` should only contain what differs.
+
+---
+
+## Deprecation Notes
+
+If you see warnings like the ones below, your `kustomization.yaml` files are using deprecated fields:
+
+```
+# Warning: 'bases' is deprecated. Please use 'resources' instead.
+# Warning: 'commonLabels' is deprecated. Please use 'labels' instead.
+```
+
+| Deprecated Field | Replacement | Why It Changed |
+|---|---|---|
+| `bases` | `resources` | `resources` now handles both local files and remote bases uniformly |
+| `commonLabels` | `labels` with `includeSelectors: false` | Old field injected labels into `selector.matchLabels`, making selectors immutable and breaking rolling updates |
+
+You can auto-fix all files in place by running:
+
+```bash
+# Fix a single overlay
+kustomize edit fix --dir overlays/dev
+kustomize edit fix --dir overlays/staging
+kustomize edit fix --dir overlays/production
+kustomize edit fix --dir base
+```
+
+After fixing, re-verify no warnings remain:
+
+```bash
+kubectl kustomize overlays/dev
+kubectl kustomize overlays/staging
+kubectl kustomize overlays/production
+```
