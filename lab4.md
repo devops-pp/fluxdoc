@@ -49,16 +49,22 @@ resources:
 
 ### clusters/production/flux-helm-lab/01-helmrepository.yaml
 
+> OCI URL requires `type: oci` — using `type: default` with an `oci://` URL
+> is what caused all previous errors.
+
 ```yaml
 apiVersion: source.toolkit.fluxcd.io/v1
 kind: HelmRepository
 metadata:
   name: helmrepo
   namespace: flux-system
+  annotations:
+    reconcile.fluxcd.io/requestedAt: "1"
 spec:
-  type: default
-  url: https://charts.bitnami.com/bitnami
-  interval: 10m
+  type: oci                                        # ← must be oci when URL starts with oci://
+  url: oci://registry-1.docker.io/bitnamicharts   # ← no trailing slash
+  interval: 5m
+  timeout: 60s
 ```
 
 ---
@@ -74,24 +80,8 @@ metadata:
 data:
   values.yaml: |
     replicaCount: 1
-    image:
-      registry: docker.io
-      repository: bitnami/nginx
-      tag: ""
     service:
       type: ClusterIP
-      port: 80
-    ingress:
-      enabled: false
-    resources:
-      requests:
-        cpu: 100m
-        memory: 128Mi
-      limits:
-        cpu: 250m
-        memory: 256Mi
-    autoscaling:
-      enabled: false
 ```
 
 ---
@@ -110,7 +100,7 @@ spec:
   chart:
     spec:
       chart: nginx
-      version: "22.6.10"           # matches: helm install my-nginx bitnami/nginx --version 22.6.10
+      version: "22.6.10"
       sourceRef:
         kind: HelmRepository
         name: helmrepo
@@ -153,56 +143,58 @@ spec:
 
 ---
 
-## Step 3 — Clean Up Old Broken Resources
-
-```bash
-kubectl delete helmrelease myhelm -n flux-system
-kubectl delete helmrepository helmrepo -n flux-system
-kubectl delete kustomization my-app -n flux-system
-```
-
----
-
-## Step 4 — Commit and Push
+## Step 3 — Commit and Push
 
 ```bash
 git add clusters/production/flux-helm-lab/
-git commit -m "Add nginx HelmRelease bitnami/nginx 22.6.10"
+git commit -m "Fix HelmRepository type to oci"
 git push origin main
 ```
 
 ---
 
-## Step 5 — Reconcile and Verify
+## Step 4 — Clean Up and Reconcile
 
 ```bash
-# Trigger sync
+# Delete stale objects from cluster
+kubectl delete helmrelease myhelm -n flux-system --ignore-not-found
+kubectl delete helmrepository helmrepo -n flux-system --ignore-not-found
+kubectl delete helmchart flux-system-myhelm -n flux-system --ignore-not-found
+
+# Reconcile from Git
 flux reconcile kustomization flux-system --with-source -n flux-system
 
-# Check HelmRepository
+# Watch
+flux get helmreleases -n flux-system --watch
+```
+
+---
+
+## Step 5 — Verify
+
+```bash
 flux get sources helm -n flux-system
 # NAME       READY   STATUS
-# helmrepo   True    Fetched revision: ...
+# helmrepo   True    Helm repository is ready
 
-# Check HelmRelease
 flux get helmreleases -n flux-system
-# NAME     READY   STATUS
-# myhelm   True    Release reconciliation succeeded
+# NAME     REVISION   READY   MESSAGE
+# myhelm   22.6.10    True    Release reconciliation succeeded
 
-# Check pods
 kubectl get pods -n myhelm-nginx
 kubectl get svc -n myhelm-nginx
 ```
 
 ---
 
-## Helm Equivalent Reference
+## Root Cause Summary
 
-| Helm CLI | FluxCD |
-|----------|--------|
-| `helm repo add bitnami https://charts.bitnami.com/bitnami` | `HelmRepository` |
-| `helm install my-nginx bitnami/nginx --version 22.6.10` | `HelmRelease` |
-| manual `helm install` | `install.createNamespace: true` + automated sync |
+| What was wrong | Fix |
+|---|---|
+| `type: default` + `oci://` URL | Must use `type: oci` with OCI URLs |
+| `type: oci` + old Flux version | Flux v0.32+ required for OCI — check with `flux version` |
+| Stale cluster objects overriding Git | Force delete + reconcile |
+| Complex values causing YAML error | Minimal values only |
 
 ---
 
@@ -225,6 +217,6 @@ flux get all -n flux-system
 # View logs
 flux logs -n flux-system --follow
 
-# Describe HelmRelease events
+# Describe HelmRelease
 kubectl describe helmrelease myhelm -n flux-system
 ```
