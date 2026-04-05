@@ -4,39 +4,15 @@
 
 ---
 
-## Your Repo Structure (Already Bootstrapped)
+## Repo Structure
 
 ```
 flux-gitops/
 └── clusters/
     └── production/
-        └── flux-system/          ← already exists (bootstrap files)
-            ├── gotk-components.yaml
-            ├── gotk-sync.yaml
-            └── kustomization.yaml
-```
-
-Flux is already running. You only need to **add your app manifests** and push to Git.
-
----
-
-## Step 1 — Create App Folder in Your Repo
-
-```bash
-git clone https://github.com/<YOUR_USER>/flux-gitops.git
-cd flux-gitops
-
-mkdir -p clusters/production/flux-helm-lab
-```
-
-Your structure will become:
-
-```
-flux-gitops/
-└── clusters/
-    └── production/
-        ├── flux-system/          ← existing (do not touch)
-        └── flux-helm-lab/        ← new (your helm app lives here)
+        ├── flux-system/               ← existing bootstrap (do not touch)
+        └── flux-helm-lab/             ← add these files
+            ├── kustomization.yaml
             ├── 01-helmrepository.yaml
             ├── 02-values-configmap.yaml
             ├── 03-helmrelease.yaml
@@ -45,12 +21,36 @@ flux-gitops/
 
 ---
 
+## Step 1 — Create App Folder
+
+```bash
+git clone https://github.com/<YOUR_USER>/flux-gitops.git
+cd flux-gitops
+mkdir -p clusters/production/flux-helm-lab
+```
+
+---
+
 ## Step 2 — Create Manifests
+
+### clusters/production/flux-helm-lab/kustomization.yaml
+
+```yaml
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - 01-helmrepository.yaml
+  - 02-values-configmap.yaml
+  - 03-helmrelease.yaml
+  - 04-kustomization.yaml
+```
+
+---
 
 ### clusters/production/flux-helm-lab/01-helmrepository.yaml
 
 ```yaml
-apiVersion: source.toolkit.fluxcd.io/v1beta2
+apiVersion: source.toolkit.fluxcd.io/v1
 kind: HelmRepository
 metadata:
   name: helmrepo
@@ -60,6 +60,8 @@ spec:
   url: https://charts.bitnami.com/bitnami
   interval: 10m
 ```
+
+---
 
 ### clusters/production/flux-helm-lab/02-values-configmap.yaml
 
@@ -92,10 +94,12 @@ data:
       enabled: false
 ```
 
+---
+
 ### clusters/production/flux-helm-lab/03-helmrelease.yaml
 
 ```yaml
-apiVersion: helm.toolkit.fluxcd.io/v2beta2
+apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
   name: myhelm
@@ -106,7 +110,7 @@ spec:
   chart:
     spec:
       chart: nginx
-      version: "22.4.3"
+      version: "22.6.10"           # matches: helm install my-nginx bitnami/nginx --version 22.6.10
       sourceRef:
         kind: HelmRepository
         name: helmrepo
@@ -124,9 +128,10 @@ spec:
   valuesFrom:
     - kind: ConfigMap
       name: nginx-helm-values
-      namespace: flux-system
       valuesKey: values.yaml
 ```
+
+---
 
 ### clusters/production/flux-helm-lab/04-kustomization.yaml
 
@@ -141,88 +146,83 @@ spec:
   prune: false
   sourceRef:
     kind: GitRepository
-    name: flux-system          # References the GitRepository created during bootstrap
+    name: flux-system
     namespace: flux-system
   path: "./clusters/production/flux-helm-lab"
 ```
 
 ---
 
-## Step 3 — Commit and Push
+## Step 3 — Clean Up Old Broken Resources
 
 ```bash
-git add clusters/production/flux-helm-lab/
-git commit -m "Add nginx HelmRelease via Bitnami"
-git push origin main
-```
-
-Flux picks up the change automatically. To trigger immediately without waiting:
-
-```bash
-flux reconcile kustomization flux-system --with-source -n flux-system
+kubectl delete helmrelease myhelm -n flux-system
+kubectl delete helmrepository helmrepo -n flux-system
+kubectl delete kustomization my-app -n flux-system
 ```
 
 ---
 
-## Step 4 — Verify
+## Step 4 — Commit and Push
 
 ```bash
-# Check HelmRepository is fetched
+git add clusters/production/flux-helm-lab/
+git commit -m "Add nginx HelmRelease bitnami/nginx 22.6.10"
+git push origin main
+```
+
+---
+
+## Step 5 — Reconcile and Verify
+
+```bash
+# Trigger sync
+flux reconcile kustomization flux-system --with-source -n flux-system
+
+# Check HelmRepository
 flux get sources helm -n flux-system
 # NAME       READY   STATUS
-# helmrepo   True    Fetched chart index
+# helmrepo   True    Fetched revision: ...
 
-# Check HelmRelease reconciled
+# Check HelmRelease
 flux get helmreleases -n flux-system
 # NAME     READY   STATUS
 # myhelm   True    Release reconciliation succeeded
 
-# Check nginx pods
+# Check pods
 kubectl get pods -n myhelm-nginx
-
-# Check service
 kubectl get svc -n myhelm-nginx
 ```
 
 ---
 
-## Step 5 — GitOps Change Flow
+## Helm Equivalent Reference
 
-To update values or chart version — never `kubectl apply` directly, always go through Git:
-
-```bash
-# Edit any manifest, e.g. bump replicaCount or chart version
-vi clusters/production/flux-helm-lab/02-values-configmap.yaml
-
-git add .
-git commit -m "Update nginx values"
-git push origin main
-
-# Force immediate reconciliation
-flux reconcile kustomization flux-helm-lab --with-source -n flux-system
-
-# Watch HelmRelease update
-flux get helmreleases -n flux-system --watch
-```
+| Helm CLI | FluxCD |
+|----------|--------|
+| `helm repo add bitnami https://charts.bitnami.com/bitnami` | `HelmRepository` |
+| `helm install my-nginx bitnami/nginx --version 22.6.10` | `HelmRelease` |
+| manual `helm install` | `install.createNamespace: true` + automated sync |
 
 ---
 
 ## Useful Commands
 
 ```bash
-# View all Flux resources
-flux get all -n flux-system
+# Force reconcile
+flux reconcile kustomization flux-system --with-source -n flux-system
 
 # Force reconcile HelmRelease only
 flux reconcile helmrelease myhelm -n flux-system
 
-# Suspend auto-sync
+# Suspend / resume
 flux suspend helmrelease myhelm -n flux-system
-
-# Resume auto-sync
 flux resume helmrelease myhelm -n flux-system
 
-# View Flux logs
+# View all Flux resources
+flux get all -n flux-system
+
+# View logs
 flux logs -n flux-system --follow
 
 # Describe HelmRelease events
