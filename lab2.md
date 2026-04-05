@@ -1,422 +1,155 @@
-# 4.1 Working with GitRepository and Kustomization
+# FluxCD GitOps Lab: Environment-Specific Deployments with Kustomize
 
 ## Overview
 
-This section covers the two most fundamental FluxCD resources: `GitRepository` and `Kustomization`. Together they form the core of any GitOps workflow — `GitRepository` tells Flux where to fetch manifests from, and `Kustomization` tells Flux what to do with them once fetched.
+Flux is bootstrapped in **`flux-gitops`** under `clusters/production/flux-system/`.
+This means Flux watches **`clusters/production/`** — everything you want reconciled must live there.
 
----
+**Actual repo structure (from bootstrap):**
 
-## Table of Contents
-
-- [Creating GitRepository Resources](#creating-gitrepository-resources)
-- [Defining Kustomization Resources](#defining-kustomization-resources)
-- [Health Checks and Dependencies](#health-checks-and-dependencies)
-- [Managing Multi-Environment Deployments](#managing-multi-environment-deployments)
-- [GitLab Repository Structure for FluxCD](#gitlab-repository-structure-for-fluxcd)
-- [Sync Intervals and Automation](#sync-intervals-and-automation)
-
----
-
-## Creating GitRepository Resources
-
-A `GitRepository` resource instructs the Flux `source-controller` to clone a Git repository at a defined interval and make it available as an artifact for other Flux resources to consume.
-
-### Basic GitRepository — Public Repository
-
-```yaml
-# gitrepository-public.yaml
-apiVersion: source.toolkit.fluxcd.io/v1
-kind: GitRepository
-metadata:
-  name: my-app
-  namespace: flux-system
-spec:
-  interval: 1m
-  url: https://gitlab.com/<username>/manifest-repo
-  ref:
-    branch: main
+```
+flux-gitops/
+└── clusters/
+    ├── kustomize-demo/          ← NOT watched by Flux — ignore this
+    └── production/              ← Flux watches THIS path
+        └── flux-system/         ← auto-generated, do not edit
+            ├── gotk-components.yaml
+            ├── gotk-sync.yaml
+            └── kustomization.yaml
 ```
 
-### GitRepository — Private Repository with Token Auth
+**Why reconciliation wasn't working:** The `namespaces/` directory was placed under
+`clusters/kustomize-demo/` which Flux never sees. It must be under `clusters/production/`.
 
-First create the Kubernetes secret:
+**Target structure after this lab:**
+
+```
+flux-gitops/
+└── clusters/
+    └── production/              ← everything goes here
+        ├── flux-system/         ← do not touch
+        ├── namespaces/
+        │   └── namespaces.yaml
+        ├── sources/
+        │   └── gitrepository.yaml
+        └── apps/
+            ├── dev.yaml
+            ├── staging.yaml
+            └── production.yaml
+```
+
+**Reconciliation flow:**
+
+```
+gitlab.com/amitopenwriteup/manifest-repo
+       │  (polled every 1m by source-controller)
+       ▼
+   FluxCD — watching clusters/production/ in flux-gitops
+       │
+       ├──▶ dev namespace        (overlays/dev,        every 1m)
+       ├──▶ staging namespace    (overlays/staging,    every 2m)
+       └──▶ production namespace (overlays/production, every 5m)
+```
+
+---
+
+## Fix: Move namespaces.yaml to the correct path
+
+The `namespaces.yaml` currently in `clusters/kustomize-demo/namespaces/` must be moved:
 
 ```bash
-kubectl create secret generic gitlab-auth \
-  --namespace=flux-system \
-  --from-literal=username=<deploy-token-username> \
-  --from-literal=password=<deploy-token-or-pat>
+cd flux-gitops
+
+# Move to the correct watched path
+mkdir -p clusters/production/namespaces
+vi    clusters/production/namespaces/namespaces.yaml
 ```
 
-Then reference it in the `GitRepository`:
+```
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: dev
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: staging
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: production
+```
+
+```
+git commit -m "add"
+git push
+```
+
+Verify Flux picks it up:
+
+```bash
+flux reconcile kustomization flux-system --with-source
+kubectl get namespaces | grep -E 'dev|staging|production'
+```
+
+---
+
+## Step 1: Declare the GitRepository Source
+
+Tell Flux's `source-controller` to watch `manifest-repo`.
+
+**`clusters/production/sources/gitrepository.yaml`**
 
 ```yaml
-# gitrepository-private.yaml
 apiVersion: source.toolkit.fluxcd.io/v1
 kind: GitRepository
 metadata:
-  name: my-app
+  name: manifest-repo
   namespace: flux-system
 spec:
   interval: 1m
-  url: https://gitlab.com/<username>/manifest-repo
+  url: https://gitlab.com/amitopenwriteup/manifest-repo
+  ref:
+    branch: main
   secretRef:
-    name: gitlab-auth
-  ref:
-    branch: main
+    name: flux-system       # created by bootstrap — holds your GitLab token
 ```
-
-### GitRepository — Pin to a Specific Tag or Commit
-
-```yaml
-spec:
-  ref:
-    # Track a specific tag
-    tag: v1.2.0
-
-    # OR pin to an exact commit SHA
-    commit: 4e7a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a
-
-    # OR track a semver range
-    semver: ">=1.0.0 <2.0.0"
-```
-
-### GitRepository — Ignore Specific Paths
-
-Use `.sourceignore` or inline `ignore` to skip files that should not trigger reconciliation:
-
-```yaml
-spec:
-  interval: 1m
-  url: https://gitlab.com/<username>/manifest-repo
-  ref:
-    branch: main
-  ignore: |
-    # Ignore docs and CI files — changes here won't trigger a sync
-    /docs/
-    /.gitlab-ci.yml
-    /README.md
-    *.png
-```
-
-### Apply and Verify a GitRepository
 
 ```bash
-# Apply the resource
-kubectl apply -f gitrepository-private.yaml
-
-# Check status
-flux get source git -A
-
-# Watch until READY=True
-flux get source git my-app -n flux-system --watch
-
-# Describe for detailed events
-kubectl describe gitrepository my-app -n flux-system
+mkdir -p clusters/production/sources
+# create the file above, then:
+git add clusters/production/sources/
+git commit -m "feat: add GitRepository source for manifest-repo"
+git push
 ```
 
-Expected healthy output:
-
-```
-NAME     REVISION          SUSPENDED  READY  MESSAGE
-my-app   main@sha1:4e7a1b  False      True   stored artifact for revision 'main@sha1:4e7a1b'
-```
-
-### GitRepository Field Reference
-
-| Field | Description | Example |
-|---|---|---|
-| `interval` | How often Flux polls the repository | `1m`, `5m`, `30s` |
-| `url` | HTTPS or SSH URL of the repository | `https://gitlab.com/user/repo` |
-| `ref.branch` | Branch to track | `main` |
-| `ref.tag` | Exact tag to pin | `v1.0.0` |
-| `ref.semver` | Semver range to track | `>=1.0.0 <2.0.0` |
-| `ref.commit` | Exact commit SHA to pin | `4e7a1b2c...` |
-| `secretRef.name` | Kubernetes secret with Git credentials | `gitlab-auth` |
-| `ignore` | Glob patterns to exclude from artifact | `/docs/` |
-| `timeout` | Timeout for Git operations | `60s` |
-
----
-
-## Defining Kustomization Resources
-
-A `Kustomization` resource instructs the Flux `kustomize-controller` to build and apply Kubernetes manifests from a path within a `GitRepository` artifact. It is the bridge between source and cluster state.
-
-### Basic Kustomization
-
-```yaml
-# kustomization-basic.yaml
-apiVersion: kustomize.toolkit.fluxcd.io/v1
-kind: Kustomization
-metadata:
-  name: my-app
-  namespace: flux-system
-spec:
-  interval: 5m
-  sourceRef:
-    kind: GitRepository
-    name: my-app
-  path: ./apps/overlays/production
-  prune: true
-  wait: true
-  timeout: 2m
-```
-
-### Kustomization with Target Namespace
-
-```yaml
-spec:
-  interval: 5m
-  sourceRef:
-    kind: GitRepository
-    name: my-app
-  path: ./apps/base
-  prune: true
-  targetNamespace: production        # Override namespace for all resources
-```
-
-### Kustomization with Post-Build Variable Substitution
-
-Inject runtime values into manifests without modifying source files:
-
-```yaml
-spec:
-  interval: 5m
-  sourceRef:
-    kind: GitRepository
-    name: my-app
-  path: ./apps/overlays/production
-  prune: true
-  postBuild:
-    substitute:
-      cluster_name: "prod-cluster-eu"
-      region: "eu-west-1"
-    substituteFrom:
-      - kind: ConfigMap
-        name: cluster-vars
-      - kind: Secret
-        name: cluster-secrets
-```
-
-In your manifest files, reference variables with `${VAR_NAME}`:
-
-```yaml
-# apps/overlays/production/deployment.yaml
-env:
-  - name: CLUSTER_NAME
-    value: "${cluster_name}"
-  - name: REGION
-    value: "${region}"
-```
-
-### Kustomization — Force Apply
-
-Force recreation of resources that cannot be patched (e.g., immutable fields):
-
-```yaml
-spec:
-  force: true       # Deletes and recreates resources if a patch fails
-```
-
-> **WARN:** Use `force: true` with caution in production. It can cause brief downtime when resources are recreated.
-
-### Apply and Verify a Kustomization
+**Verify:**
 
 ```bash
-# Apply the resource
-kubectl apply -f kustomization-basic.yaml
-
-# Check status
-flux get kustomization -A
-
-# Watch until READY=True
-flux get kustomization my-app -n flux-system --watch
-
-# Force an immediate reconciliation
-flux reconcile kustomization my-app --with-source -n flux-system
-
-# View detailed events
-kubectl describe kustomization my-app -n flux-system
+flux get sources git
 ```
 
-Expected healthy output:
+Expected:
 
 ```
-NAME    REVISION          SUSPENDED  READY  MESSAGE
-my-app  main@sha1:4e7a1b  False      True   Applied revision: main@sha1:4e7a1b
+NAME           REVISION        SUSPENDED  READY  MESSAGE
+flux-system    main@sha1:...   False      True   stored artifact...
+manifest-repo  main@sha1:...   False      True   stored artifact...
 ```
-
-### Kustomization Field Reference
-
-| Field | Description | Default |
-|---|---|---|
-| `interval` | How often to reconcile | Required |
-| `sourceRef` | Reference to a `GitRepository` or `Bucket` | Required |
-| `path` | Path within the source artifact | `./` |
-| `prune` | Delete cluster resources removed from Git | `false` |
-| `wait` | Wait for all applied resources to become ready | `false` |
-| `timeout` | Timeout for apply and health check operations | `5m` |
-| `targetNamespace` | Override namespace for all applied resources | — |
-| `force` | Recreate resources that cannot be patched | `false` |
-| `suspend` | Pause reconciliation without deleting resources | `false` |
-| `postBuild.substitute` | Inline variable substitution map | — |
-| `postBuild.substituteFrom` | Variable substitution from ConfigMap or Secret | — |
 
 ---
 
-## Health Checks and Dependencies
-
-### Built-in Health Checks with `wait`
-
-When `wait: true` is set, Flux monitors all applied resources and only marks the `Kustomization` as `READY` once every resource reports healthy. This prevents dependent resources from applying before their dependencies are up.
-
-```yaml
-spec:
-  interval: 5m
-  sourceRef:
-    kind: GitRepository
-    name: my-app
-  path: ./apps/overlays/production
-  prune: true
-  wait: true            # Wait for Deployments, StatefulSets, DaemonSets to be ready
-  timeout: 5m           # Fail if not healthy within 5 minutes
-```
-
-### Custom Health Checks
-
-Define explicit health checks for resources that Flux does not natively understand (e.g., CRDs):
-
-```yaml
-spec:
-  interval: 5m
-  sourceRef:
-    kind: GitRepository
-    name: my-app
-  path: ./apps/overlays/production
-  prune: true
-  healthChecks:
-    - apiVersion: apps/v1
-      kind: Deployment
-      name: my-app
-      namespace: production
-    - apiVersion: v1
-      kind: StatefulSet
-      name: my-db
-      namespace: production
-    - apiVersion: batch/v1
-      kind: Job
-      name: db-migration
-      namespace: production
-```
-
-### Dependencies Between Kustomizations
-
-Use `dependsOn` to enforce ordering. Flux will not apply a `Kustomization` until all listed dependencies are `READY`.
-
-```yaml
-# infrastructure/kustomization.yaml — applied first
-apiVersion: kustomize.toolkit.fluxcd.io/v1
-kind: Kustomization
-metadata:
-  name: infrastructure
-  namespace: flux-system
-spec:
-  interval: 10m
-  sourceRef:
-    kind: GitRepository
-    name: my-app
-  path: ./infrastructure
-  prune: true
-  wait: true
----
-# apps/kustomization.yaml — waits for infrastructure
-apiVersion: kustomize.toolkit.fluxcd.io/v1
-kind: Kustomization
-metadata:
-  name: apps
-  namespace: flux-system
-spec:
-  interval: 5m
-  sourceRef:
-    kind: GitRepository
-    name: my-app
-  path: ./apps/overlays/production
-  prune: true
-  dependsOn:
-    - name: infrastructure          # Will not apply until infrastructure is READY
-```
-
-### Multi-layer Dependency Chain
-
-```yaml
-# Layer 1: CRDs
-metadata:
-  name: crds
-# No dependsOn — applied first
-
----
-# Layer 2: Infrastructure (cert-manager, ingress, etc.)
-metadata:
-  name: infrastructure
-spec:
-  dependsOn:
-    - name: crds
-
----
-# Layer 3: Databases and stateful services
-metadata:
-  name: databases
-spec:
-  dependsOn:
-    - name: infrastructure
-
----
-# Layer 4: Applications
-metadata:
-  name: apps
-spec:
-  dependsOn:
-    - name: databases
-    - name: infrastructure
-```
-
-### Check Health Status
+## Step 2: Create Flux Kustomizations per Environment
 
 ```bash
-# Overall health of all kustomizations
-flux get kustomization -A
-
-# Detailed health events for a specific kustomization
-kubectl describe kustomization apps -n flux-system
-
-# Check which resources Flux is health-checking
-flux get kustomization apps -n flux-system --verbose
+mkdir -p clusters/production/apps
 ```
 
----
-
-## Managing Multi-Environment Deployments
-
-### Pattern: One GitRepository, Multiple Kustomizations
-
-A single `GitRepository` source can feed multiple `Kustomization` resources, each pointing to a different overlay path. This is the recommended pattern for multi-environment GitOps.
+### Dev — `clusters/production/apps/dev.yaml`
 
 ```yaml
-# source — shared across all environments
-apiVersion: source.toolkit.fluxcd.io/v1
-kind: GitRepository
-metadata:
-  name: my-app
-  namespace: flux-system
-spec:
-  interval: 1m
-  url: https://gitlab.com/<username>/manifest-repo
-  secretRef:
-    name: gitlab-auth
-  ref:
-    branch: main
----
-# dev environment
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -426,369 +159,256 @@ spec:
   interval: 1m
   sourceRef:
     kind: GitRepository
-    name: my-app
-  path: ./apps/overlays/dev
+    name: manifest-repo
+  path: ./overlays/dev
   prune: true
   targetNamespace: dev
----
-# staging environment
+  healthChecks:
+    - apiVersion: apps/v1
+      kind: Deployment
+      name: dev-my-app
+      namespace: dev
+  timeout: 3m
+```
+
+### Staging — `clusters/production/apps/staging.yaml`
+
+```yaml
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
   name: my-app-staging
   namespace: flux-system
 spec:
-  interval: 5m
+  interval: 2m
   sourceRef:
     kind: GitRepository
-    name: my-app
-  path: ./apps/overlays/staging
+    name: manifest-repo
+  path: ./overlays/staging
   prune: true
   targetNamespace: staging
----
-# production environment
+  healthChecks:
+    - apiVersion: apps/v1
+      kind: Deployment
+      name: staging-my-app
+      namespace: staging
+  timeout: 3m
+  dependsOn:
+    - name: my-app-dev
+```
+
+### Production — `clusters/production/apps/production.yaml`
+
+```yaml
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
   name: my-app-production
   namespace: flux-system
 spec:
-  interval: 10m
+  interval: 5m
   sourceRef:
     kind: GitRepository
-    name: my-app
-  path: ./apps/overlays/production
+    name: manifest-repo
+  path: ./overlays/production
   prune: true
-  wait: true
-  timeout: 5m
   targetNamespace: production
+  healthChecks:
+    - apiVersion: apps/v1
+      kind: Deployment
+      name: prod-my-app
+      namespace: production
+    - apiVersion: autoscaling/v2
+      kind: HorizontalPodAutoscaler
+      name: prod-my-app
+      namespace: production
+  timeout: 5m
+  dependsOn:
+    - name: my-app-staging
+  retryInterval: 2m
 ```
 
-### Verify Multi-Environment Status
-
 ```bash
-# See all environments at a glance
-flux get kustomization -A
-
-# Sample output
-# NAMESPACE    NAME                 REVISION          READY  MESSAGE
-# flux-system  my-app-dev           main@sha1:4e7a1b  True   Applied revision: main@sha1:4e7a1b
-# flux-system  my-app-staging       main@sha1:4e7a1b  True   Applied revision: main@sha1:4e7a1b
-# flux-system  my-app-production    main@sha1:4e7a1b  True   Applied revision: main@sha1:4e7a1b
-
-# Reconcile a specific environment immediately
-flux reconcile kustomization my-app-staging --with-source -n flux-system
-
-# Suspend production auto-sync during a maintenance window
-flux suspend kustomization my-app-production -n flux-system
-
-# Resume after maintenance
-flux resume kustomization my-app-production -n flux-system
+git add clusters/production/apps/
+git commit -m "feat: add Flux Kustomizations for dev, staging, production"
+git push
 ```
 
 ---
 
-## GitLab Repository Structure for FluxCD
+## Step 3: Watch Flux Reconcile
 
-### Recommended Repository Layout
-
-The standard GitLab + FluxCD repository structure separates Flux internals (`clusters/`) from application manifests (`apps/`) and shared infrastructure (`infrastructure/`):
-
-```
-manifest-repo/
-├── clusters/
-│   ├── production/
-│   │   └── flux-system/              ← Flux bootstrap files (auto-generated)
-│   │       ├── gotk-components.yaml
-│   │       ├── gotk-sync.yaml
-│   │       └── kustomization.yaml
-│   └── staging/
-│       └── flux-system/
-├── infrastructure/
-│   ├── base/
-│   │   ├── cert-manager/
-│   │   ├── ingress-nginx/
-│   │   └── kustomization.yaml
-│   └── overlays/
-│       ├── production/
-│       └── staging/
-└── apps/
-    ├── base/
-    │   ├── deployment.yaml
-    │   ├── service.yaml
-    │   ├── configmap.yaml
-    │   └── kustomization.yaml
-    └── overlays/
-        ├── dev/
-        │   ├── kustomization.yaml
-        │   └── patch-replicas.yaml
-        ├── staging/
-        │   ├── kustomization.yaml
-        │   ├── patch-replicas.yaml
-        │   └── patch-resources.yaml
-        └── production/
-            ├── kustomization.yaml
-            ├── patch-replicas.yaml
-            ├── patch-resources.yaml
-            └── patch-hpa.yaml
+```bash
+flux get kustomizations --watch
 ```
 
-### GitLab Branch Strategy for FluxCD
+Expected output:
 
-| Branch | Purpose | Flux Watches? |
+```
+NAME                REVISION        SUSPENDED  READY  MESSAGE
+flux-system         main@sha1:abc   False      True   Applied revision: main@sha1:abc
+my-app-dev          main@sha1:abc   False      True   Applied revision: main@sha1:abc
+my-app-staging      main@sha1:abc   False      True   Applied revision: main@sha1:abc
+my-app-production   main@sha1:abc   False      True   Applied revision: main@sha1:abc
+```
+
+**Verify resources:**
+
+```bash
+kubectl get all -n dev
+kubectl get all -n staging
+kubectl get all -n production
+kubectl get hpa -n production     # HPA only in production
+```
+
+---
+
+## Step 4: The GitOps Workflow
+
+### App changes → push to `manifest-repo`
+
+```bash
+cd manifest-repo
+vim overlays/staging/patch-replicas.yaml   # replicas: 2 → 3
+git add -A && git commit -m "scale: bump staging replicas to 3"
+git push
+# Flux reconciles automatically within 2m
+```
+
+### Flux config changes → push to `flux-gitops`
+
+```bash
+cd flux-gitops
+vim clusters/production/apps/production.yaml   # e.g. change interval
+git add -A && git commit -m "config: adjust production interval"
+git push
+```
+
+### Force immediate reconcile
+
+```bash
+flux reconcile source git manifest-repo
+flux reconcile kustomization my-app-dev --with-source
+flux reconcile kustomization my-app-staging --with-source
+flux reconcile kustomization my-app-production --with-source
+```
+
+---
+
+## Step 5: Suspend & Resume
+
+```bash
+# Freeze production
+flux suspend kustomization my-app-production
+
+# Confirm
+flux get kustomization my-app-production   # SUSPENDED = True
+
+# Resume
+flux resume kustomization my-app-production
+```
+
+---
+
+## Step 6: Diff Before Apply
+
+```bash
+# See what would change in staging right now
+flux diff kustomization my-app-staging
+
+# Render locally without touching the cluster
+kubectl kustomize manifest-repo/overlays/staging
+```
+
+---
+
+## Step 7: Notifications (Optional)
+
+```bash
+kubectl create secret generic slack-webhook \
+  -n flux-system \
+  --from-literal=address=https://hooks.slack.com/services/YOUR/WEBHOOK/URL
+```
+
+**`clusters/production/notifications/provider.yaml`**
+
+```yaml
+apiVersion: notification.toolkit.fluxcd.io/v1beta3
+kind: Provider
+metadata:
+  name: slack
+  namespace: flux-system
+spec:
+  type: slack
+  channel: "#gitops-alerts"
+  secretRef:
+    name: slack-webhook
+```
+
+**`clusters/production/notifications/alert.yaml`**
+
+```yaml
+apiVersion: notification.toolkit.fluxcd.io/v1beta3
+kind: Alert
+metadata:
+  name: my-app-alerts
+  namespace: flux-system
+spec:
+  summary: "manifest-repo reconciliation"
+  providerRef:
+    name: slack
+  eventSeverity: info
+  eventSources:
+    - kind: Kustomization
+      name: "my-app-dev"
+    - kind: Kustomization
+      name: "my-app-staging"
+    - kind: Kustomization
+      name: "my-app-production"
+```
+
+```bash
+git add clusters/production/notifications/
+git commit -m "feat: add Slack notifications"
+git push
+```
+
+---
+
+## Full Verification Checklist
+
+```bash
+flux check                                              # system health
+flux get sources git                                    # both repos fetched
+flux get kustomizations                                 # all 4 Ready
+flux events                                             # recent activity
+kubectl get all -n dev
+kubectl get all -n staging
+kubectl get all -n production
+kubectl get hpa -A                                      # only in production
+kubectl logs -n flux-system deploy/kustomize-controller -f
+```
+
+---
+
+## Troubleshooting
+
+| Symptom | Diagnosis | Fix |
 |---|---|---|
-| `main` | Production-ready manifests | ✔ Production Kustomization |
-| `staging` | Staging-validated manifests | ✔ Staging Kustomization |
-| `dev` | Development manifests | ✔ Dev Kustomization |
-| `feature/*` | Work in progress | ✗ Not watched by Flux |
-
-### Multi-Branch GitRepository Setup
-
-```yaml
-# Production — watches main branch
-apiVersion: source.toolkit.fluxcd.io/v1
-kind: GitRepository
-metadata:
-  name: manifest-repo-production
-  namespace: flux-system
-spec:
-  interval: 1m
-  url: https://gitlab.com/<username>/manifest-repo
-  secretRef:
-    name: gitlab-auth
-  ref:
-    branch: main
----
-# Staging — watches staging branch
-apiVersion: source.toolkit.fluxcd.io/v1
-kind: GitRepository
-metadata:
-  name: manifest-repo-staging
-  namespace: flux-system
-spec:
-  interval: 1m
-  url: https://gitlab.com/<username>/manifest-repo
-  secretRef:
-    name: gitlab-auth
-  ref:
-    branch: staging
-```
-
-### GitLab Deploy Token Setup for Flux
-
-```bash
-# Create a deploy token in GitLab:
-# manifest-repo > Settings > Repository > Deploy Tokens
-# Scopes: read_repository
-
-# Create the Kubernetes secret
-kubectl create secret generic gitlab-auth \
-  --namespace=flux-system \
-  --from-literal=username=<deploy-token-username> \
-  --from-literal=password=<deploy-token-password>
-
-# Verify the secret exists
-kubectl get secret gitlab-auth -n flux-system
-```
+| Namespaces not created | `flux get ks flux-system` | Confirm file is under `clusters/production/`, not `clusters/kustomize-demo/` |
+| `manifest-repo` source not ready | `flux get sources git` | Token in `flux-system` secret needs `api` + `write_repository` scopes |
+| Kustomization `Not Ready` | `flux get ks my-app-dev` | Read `MESSAGE` — usually a wrong path or missing namespace |
+| Staging blocked | `flux get ks my-app-dev` | Fix dev first — `dependsOn` holds staging until dev is healthy |
+| Resources not pruned | `kubectl get all -n dev` | Confirm `prune: true` and `targetNamespace` matches overlay |
+| Nothing reconciling at all | `flux get ks flux-system` | Check `gotk-sync.yaml` — its `path:` must match where your files are |
 
 ---
 
-## Sync Intervals and Automation
+## Two-Repo Reference
 
-### Choosing the Right Interval
-
-Sync interval controls how frequently Flux polls the GitRepository and reconciles the cluster. Choosing the right value balances responsiveness against API server load.
-
-| Environment | Recommended Interval | Reasoning |
+| Repo | Path that matters | Purpose |
 |---|---|---|
-| Dev | `30s` – `1m` | Fast feedback during active development |
-| Staging | `1m` – `5m` | Moderate — balances speed and stability |
-| Production | `5m` – `10m` | Conservative — reduces reconciliation churn |
-| Infrastructure | `10m` – `30m` | Rarely changes, low urgency |
+| `flux-gitops` | `clusters/production/` | Flux config — sources, Kustomizations, alerts |
+| `manifest-repo` | `overlays/`, `base/` | App manifests — what gets deployed |
 
-### Setting Different Intervals per Layer
-
-```yaml
-# Source fetched frequently
-apiVersion: source.toolkit.fluxcd.io/v1
-kind: GitRepository
-metadata:
-  name: my-app
-spec:
-  interval: 1m           # Poll GitLab every 1 minute
-
----
-# Infrastructure reconciled infrequently
-apiVersion: kustomize.toolkit.fluxcd.io/v1
-kind: Kustomization
-metadata:
-  name: infrastructure
-spec:
-  interval: 30m          # Reconcile every 30 minutes
-  sourceRef:
-    kind: GitRepository
-    name: my-app
-
----
-# Apps reconciled more frequently
-apiVersion: kustomize.toolkit.fluxcd.io/v1
-kind: Kustomization
-metadata:
-  name: apps
-spec:
-  interval: 5m           # Reconcile every 5 minutes
-  sourceRef:
-    kind: GitRepository
-    name: my-app
-```
-
-> **NOTE:** The `GitRepository` interval and the `Kustomization` interval are independent. Flux fetches the source on the `GitRepository` schedule and reconciles on the `Kustomization` schedule. Set the source interval shorter than or equal to the shortest kustomization interval.
-
-### Force Immediate Sync (Bypass Interval)
-
-```bash
-# Sync source only (fetch latest commits from GitLab)
-flux reconcile source git my-app -n flux-system
-
-# Sync a specific kustomization only
-flux reconcile kustomization my-app-production -n flux-system
-
-# Sync source AND all kustomizations that depend on it
-flux reconcile kustomization my-app-production --with-source -n flux-system
-```
-
-### GitLab Webhook — Trigger Flux on Push (Instant Sync)
-
-Instead of polling, configure GitLab to notify Flux immediately on every push. This effectively makes the sync interval irrelevant for push-triggered reconciliation.
-
-**Step 1 — Create the Flux webhook receiver:**
-
-```yaml
-# receiver.yaml
-apiVersion: notification.toolkit.fluxcd.io/v1
-kind: Receiver
-metadata:
-  name: gitlab-receiver
-  namespace: flux-system
-spec:
-  type: gitlab
-  events:
-    - Push Hook
-  secretRef:
-    name: webhook-token
-  resources:
-    - apiVersion: source.toolkit.fluxcd.io/v1
-      kind: GitRepository
-      name: my-app
-```
-
-**Step 2 — Create the webhook secret:**
-
-```bash
-# Generate a random token
-TOKEN=$(head -c 12 /dev/urandom | shasum | cut -d ' ' -f1)
-echo $TOKEN
-
-kubectl create secret generic webhook-token \
-  --namespace=flux-system \
-  --from-literal=token=$TOKEN
-```
-
-**Step 3 — Get the receiver URL:**
-
-```bash
-kubectl get receiver gitlab-receiver -n flux-system -o jsonpath='{.status.webhookPath}'
-# Output: /hook/sha256sum-of-token
-```
-
-**Step 4 — Register in GitLab:**
-
-Go to `manifest-repo > Settings > Webhooks` and add:
-- **URL:** `https://<your-flux-ingress>/hook/<path-from-step-3>`
-- **Secret token:** the token from Step 2
-- **Trigger:** Push events
-
-### Suspend and Resume Automation
-
-```bash
-# Suspend a kustomization (stops reconciliation, keeps existing resources)
-flux suspend kustomization my-app-production -n flux-system
-
-# Suspend the source (stops fetching from GitLab)
-flux suspend source git my-app -n flux-system
-
-# Resume reconciliation
-flux resume kustomization my-app-production -n flux-system
-flux resume source git my-app -n flux-system
-
-# Check suspended status
-flux get kustomization -A
-# SUSPENDED column shows True/False
-```
-
-### Export Resource Definitions
-
-```bash
-# Export GitRepository as YAML
-flux export source git my-app -n flux-system
-
-# Export all Kustomizations
-flux export kustomization --all -n flux-system
-
-# Export everything and save to file
-flux export source git --all -n flux-system > gitrepositories.yaml
-flux export kustomization --all -n flux-system > kustomizations.yaml
-```
-
----
-
-## Quick Reference
-
-### GitRepository CLI Commands
-
-```bash
-flux get source git -A                              # List all GitRepositories
-flux get source git <name> -n flux-system --watch   # Watch a specific source
-flux reconcile source git <name> -n flux-system     # Force fetch from GitLab
-flux suspend source git <name> -n flux-system       # Pause source polling
-flux resume source git <name> -n flux-system        # Resume source polling
-flux export source git <name> -n flux-system        # Export as YAML
-```
-
-### Kustomization CLI Commands
-
-```bash
-flux get kustomization -A                                        # List all Kustomizations
-flux get kustomization <name> -n flux-system --watch             # Watch a specific kustomization
-flux reconcile kustomization <name> -n flux-system               # Force reconcile
-flux reconcile kustomization <name> --with-source -n flux-system # Force source + reconcile
-flux suspend kustomization <name> -n flux-system                 # Pause reconciliation
-flux resume kustomization <name> -n flux-system                  # Resume reconciliation
-flux export kustomization <name> -n flux-system                  # Export as YAML
-flux logs --kind=Kustomization --name=<name>                     # View controller logs
-```
-
-### Common Status Messages
-
-| Message | Meaning |
-|---|---|
-| `Applied revision: main@sha1:abc123` | Reconciliation succeeded |
-| `stored artifact for revision 'main@sha1:abc123'` | Source fetched successfully |
-| `health check failed` | A resource did not become ready within `timeout` |
-| `dependency not ready` | A `dependsOn` target is not yet `READY` |
-| `ReconciliationSucceeded` | Full cycle completed without errors |
-| `kustomize build failed` | YAML error in manifests — check `flux logs --level=error` |
-
----
-
-## Key Documentation Links
-
-- **GitRepository API reference:** https://fluxcd.io/flux/components/source/gitrepositories/
-- **Kustomization API reference:** https://fluxcd.io/flux/components/kustomize/kustomizations/
-- **Multi-tenancy guide:** https://fluxcd.io/flux/guides/repository-structure/
-- **Webhook receivers:** https://fluxcd.io/flux/guides/webhook-receivers/
-- **Variable substitution:** https://fluxcd.io/flux/components/kustomize/kustomizations/#post-build-variable-substitution
-
----
-
-*Section 4.1 · Advanced GitOps Workshop · FluxCD + GitLab*
+> **Root cause of the earlier issue:** files in `clusters/kustomize-demo/` are invisible to Flux because `gotk-sync.yaml` points to `clusters/production/`. Always add new config under `clusters/production/`.
