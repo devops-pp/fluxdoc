@@ -95,4 +95,3 @@ git log
 ```
 ```
 
-You can copy this directly into any `.md` file or Markdown editor. Let me know if you'd like this saved as a downloadable file or formatted differently!
