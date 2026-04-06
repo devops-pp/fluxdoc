@@ -5,7 +5,7 @@ Here's your Lab 1 content formatted in Markdown:
 
 ## 1. Login as Root User
 
-```bash
+```
 sudo su -
 ```
 
