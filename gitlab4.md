@@ -23,7 +23,7 @@ sudo apt update
 
 ```bash
 sudo apt install -y curl openssh-server ca-certificates tzdata perl
-sudo apt install -y postfix
+
 ```
 
 ---
