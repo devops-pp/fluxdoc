@@ -57,7 +57,9 @@ cat ~/.ssh/id_ed25519.pub
 ## 6. Clone a GitLab Repository Using SSH
 
 ```bash
-git clone git@gitlab.com:your-username/your-repo.git
+git branch -M main
+git remote add origin <ssh url>
+git push -u origin main
 ```
 
 > Replace `your-username` and `your-repo` with your actual GitLab username and repository name.
