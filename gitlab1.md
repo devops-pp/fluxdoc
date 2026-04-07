@@ -16,6 +16,7 @@ sudo su -
 ## 2. Check Git Version
 
 ```bash
+sudo apt install git -y
 git --version
 ```
 
