@@ -240,23 +240,35 @@ kubeseal --version
 
 ### Step 9 — Fetch and Commit the Public Certificate
 
+> ⚠️ `kubeseal --fetch-cert` tries to reach the controller pod IP directly and can timeout due to CNI routing between nodes. Use `kubectl port-forward` + `curl` instead — this routes through the Kubernetes API server and always works.
+
 ```bash
-# Fetch the public key from the running controller
-kubeseal --fetch-cert \
-  --controller-name=sealed-secrets-controller \
-  --controller-namespace=flux-system \
-  > pub-sealed-secrets.pem
+# Step 1 — port-forward the controller service to localhost
+kubectl port-forward svc/sealed-secrets-controller 8080:8080 -n flux-system &
 
-# View the certificate
+# Step 2 — wait for port-forward to establish
+sleep 2
+
+# Step 3 — fetch the cert via curl through the port-forward
+curl http://localhost:8080/v1/cert.pem > pub-sealed-secrets.pem
+
+# Step 4 — verify it looks like a real certificate
 cat pub-sealed-secrets.pem
+# Expected:
+# -----BEGIN CERTIFICATE-----
+# MIIErDCCApSgAwIBAgIRANn...
+# -----END CERTIFICATE-----
 
-# Commit the public cert — it is safe to share
+# Step 5 — kill the port-forward
+kill %1
+
+# Step 6 — commit the public cert — it is safe to share
 git add pub-sealed-secrets.pem
 git commit -m 'feat: add Sealed Secrets public certificate'
 git push
 ```
 
-> **Why commit the public cert?** It allows offline sealing and CI/CD pipelines to encrypt secrets without direct cluster access.
+> **Why commit the public cert?** It allows offline sealing and CI/CD pipelines to encrypt secrets without direct cluster access. The cert is public — only the private key kept inside the cluster can decrypt.
 
 ### ✅ Lab 1 Checklist
 
@@ -553,11 +565,14 @@ The controller automatically generates a new sealing key every **30 days**. Old 
 kubectl get secrets -n flux-system \
   -l sealedsecrets.bitnami.com/sealed-secrets-key
 
-# After rotation — re-fetch the new public cert
-kubeseal --fetch-cert \
-  --controller-name=sealed-secrets-controller \
-  --controller-namespace=flux-system \
-  > pub-sealed-secrets.pem
+# After rotation — re-fetch the new public cert via port-forward
+kubectl port-forward svc/sealed-secrets-controller 8080:8080 -n flux-system &
+sleep 2
+curl http://localhost:8080/v1/cert.pem > pub-sealed-secrets.pem
+kill %1
+
+# Verify the new cert
+cat pub-sealed-secrets.pem
 
 git add pub-sealed-secrets.pem
 git commit -m 'chore: update Sealed Secrets public cert after rotation'
@@ -611,7 +626,7 @@ flux-gitops/
 | Task | Command |
 |---|---|
 | Install kubeseal | `curl -OL https://github.com/bitnami-labs/sealed-secrets/releases/...` |
-| Fetch public cert | `kubeseal --fetch-cert --controller-name=sealed-secrets-controller --controller-namespace=flux-system > pub-sealed-secrets.pem` |
+| Fetch public cert | `kubectl port-forward svc/sealed-secrets-controller 8080:8080 -n flux-system & sleep 2 && curl http://localhost:8080/v1/cert.pem > pub-sealed-secrets.pem` |
 | Seal a secret | `kubeseal --cert pub-sealed-secrets.pem --format yaml < /tmp/plain.yaml > clusters/production/secrets/sealed.yaml` |
 | Seal (namespace-wide) | `kubeseal --cert pub-sealed-secrets.pem --scope namespace-wide --format yaml < /tmp/plain.yaml > clusters/production/secrets/sealed.yaml` |
 | Verify decryption | `kubectl get secret db-credentials -n production -o jsonpath='{.data.DATABASE_PASSWORD}' \| base64 -d` |
