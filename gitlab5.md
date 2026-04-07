@@ -59,8 +59,8 @@ You will be prompted for the following details:
 ### Example – Using Docker Executor
 
 ```
-executor: docker
-default image: alpine:latest
+executor: shell
+
 ```
 
 ---
