@@ -15,8 +15,7 @@
 ## Step 1: Update Your System
 
 ```bash
-sudo apt update && sudo apt upgrade -y
-```
+sudo apt update 
 
 ---
 
