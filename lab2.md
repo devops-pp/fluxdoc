@@ -53,7 +53,7 @@ gitlab.com/amitopenwriteup/manifest-repo
 
 ---
 
-## Fix: Move namespaces.yaml to the correct path
+## Nemespace creation
 
 The `namespaces.yaml` currently in `clusters/kustomize-demo/namespaces/` must be moved:
 
