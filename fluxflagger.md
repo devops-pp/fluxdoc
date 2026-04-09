@@ -14,7 +14,7 @@ Implement automated canary releases and blue-green deployments using **Flagger**
 
 * Kubernetes cluster with FluxCD bootstrapped (`kind + flux bootstrap gitlab`)
 * NGINX Ingress Controller installed via Flux (see Exercise 0)
-* `fleet-infra` repository cloned locally
+* `flux-gitops` repository cloned locally
 * `GITLAB_TOKEN` and `GITLAB_USER` exported in your shell
 
 ---
@@ -32,7 +32,7 @@ We install it the GitOps way — using a HelmRelease managed by Flux committed t
 Create the HelmRepository pointing to the ingress-nginx Helm chart registry.
 
 ```yaml
-# clusters/my-cluster/infrastructure/sources/nginx-ingress.yaml
+# clusters/proudction/infrastructure/sources/nginx-ingress.yaml
 ---
 apiVersion: source.toolkit.fluxcd.io/v1
 kind: HelmRepository
@@ -48,8 +48,8 @@ spec:
 
 ```bash
 cd fleet-infra
-mkdir -p clusters/my-cluster/infrastructure/sources
-git add clusters/my-cluster/infrastructure/sources/nginx-ingress.yaml
+mkdir -p clusters/proudction/infrastructure/sources
+git add clusters/proudction/infrastructure/sources/nginx-ingress.yaml
 git commit -m "feat: add ingress-nginx HelmRepository source"
 git push
 
@@ -68,7 +68,7 @@ ingress-nginx   https://...   False   True   stored artifact
 ## 0.2 Create Namespace + Install NGINX via HelmRelease
 
 ```yaml
-# clusters/my-cluster/infrastructure/controllers/nginx-ingress-namespace.yaml
+# clusters/proudction/infrastructure/controllers/nginx-ingress-namespace.yaml
 ---
 apiVersion: v1
 kind: Namespace
@@ -77,7 +77,7 @@ metadata:
 ```
 
 ```yaml
-# clusters/my-cluster/infrastructure/controllers/nginx-ingress.yaml
+# clusters/proudction/infrastructure/controllers/nginx-ingress.yaml
 ---
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
@@ -119,9 +119,9 @@ spec:
 ### Git Commit & Verify
 
 ```bash
-mkdir -p clusters/my-cluster/infrastructure/controllers
-git add clusters/my-cluster/infrastructure/controllers/nginx-ingress-namespace.yaml
-git add clusters/my-cluster/infrastructure/controllers/nginx-ingress.yaml
+mkdir -p clusters/proudction/infrastructure/controllers
+git add clusters/proudction/infrastructure/controllers/nginx-ingress-namespace.yaml
+git add clusters/proudction/infrastructure/controllers/nginx-ingress.yaml
 git commit -m "feat: add ingress-nginx namespace and HelmRelease"
 git push
 
@@ -149,7 +149,7 @@ Install Flagger using a HelmRelease managed by Flux.
 ## 1.1 Add Flagger HelmRepository Source
 
 ```yaml
-# clusters/my-cluster/infrastructure/controllers/ns1.yaml
+# clusters/proudction/infrastructure/controllers/ns1.yaml
 ---
 apiVersion: v1
 kind: Namespace
@@ -158,7 +158,7 @@ metadata:
 ```
 
 ```yaml
-# clusters/my-cluster/infrastructure/sources/flagger.yaml
+# clusters/proudction/infrastructure/sources/flagger.yaml
 ---
 apiVersion: source.toolkit.fluxcd.io/v1
 kind: HelmRepository
@@ -187,7 +187,7 @@ flux get sources helm
 ## 1.2 Install Flagger (NGINX Provider)
 
 ```yaml
-# clusters/my-cluster/infrastructure/controllers/flagger.yaml
+# clusters/proudction/infrastructure/controllers/flagger.yaml
 ---
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
@@ -219,7 +219,7 @@ spec:
 ```
 
 ```bash
-git add clusters/my-cluster/infrastructure/controllers/flagger.yaml
+git add clusters/proudction/infrastructure/controllers/flagger.yaml
 git commit -m "feat: add flagger HelmRelease (nginx provider)"
 git push
 
@@ -239,13 +239,13 @@ kubectl get pods -n flagger-system
 ## 2.1 Deploy Sample Application
 
 ```yaml
-#clusters/my-cluster/apps/team-alpha/nse.yaml
+#clusters/proudction/apps/team-alpha/nse.yaml
 ---
 apiVersion: v1
 kind: Namespace
 metadata:
   name: team-alpha
-# clusters/my-cluster/apps/team-alpha/podinfo-deployment.yaml
+# clusters/proudction/apps/team-alpha/podinfo-deployment.yaml
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -280,8 +280,8 @@ spec:
 > The comment `# {"$imagepolicy": "flux-system:podinfo"}` enables Flux image automation.
 
 ```bash
-mkdir -p clusters/my-cluster/apps/team-alpha
-git add clusters/my-cluster/apps/team-alpha/podinfo-deployment.yaml
+mkdir -p clusters/proudction/apps/team-alpha
+git add clusters/proudction/apps/team-alpha/podinfo-deployment.yaml
 git commit -m "feat: add podinfo deployment for canary testing"
 git push
 
@@ -296,7 +296,7 @@ kubectl get pods -n team-alpha
 ## 2.2 Create Flagger Canary Resource
 
 ```yaml
-# clusters/my-cluster/apps/team-alpha/podinfo-canary.yaml
+# clusters/proudction/apps/team-alpha/podinfo-canary.yaml
 ---
 apiVersion: flagger.app/v1beta1
 kind: Canary
@@ -322,7 +322,7 @@ spec:
 ```
 
 ```yaml
-# clusters/my-cluster/apps/team-alpha/podinfo-ingress.yaml
+# clusters/proudction/apps/team-alpha/podinfo-ingress.yaml
 ---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -347,7 +347,7 @@ spec:
 ```
 
 ```bash
-git add clusters/my-cluster/apps/team-alpha/podinfo-canary.yaml
+git add clusters/proudction/apps/team-alpha/podinfo-canary.yaml
 git commit -m "feat: add podinfo Canary resource for progressive delivery"
 git push
 
@@ -375,7 +375,7 @@ kubectl logs -n flagger-system deploy/flagger -f | grep podinfo
 # 0.3 Add Kustomization Entry for NGINX Ingress
 
 ```yaml
-# clusters/my-cluster/infrastructure/kustomization.yaml
+# clusters/proudction/infrastructure/kustomization.yaml
 ---
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
@@ -389,7 +389,7 @@ resources:
 ```
 
 ```bash
-git add clusters/my-cluster/infrastructure/kustomization.yaml
+git add clusters/proudction/infrastructure/kustomization.yaml
 git commit -m "chore: register nginx-ingress namespace + controller in kustomization"
 git push
 
