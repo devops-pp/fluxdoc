@@ -58,6 +58,7 @@ gitlab.com/amitopenwriteup/manifest-repo
 The `namespaces.yaml` currently in `clusters/kustomize-demo/namespaces/` must be moved:
 
 ```bash
+git clone <flux repo httpsurl>
 cd flux-gitops
 
 # Move to the correct watched path
