@@ -88,10 +88,10 @@ echo $AGE_PUBLIC_KEY
 
 Define which files SOPS encrypts and which age public key to use.
 
-In the root of your `fleet-infra` repository:
+In the root of your ` flux-gitops` repository:
 
 ```bash
-# fleet-infra1/.sops.yaml — commit this file to Git
+#  flux-gitops1/.sops.yaml — commit this file to Git
 cat > .sops.yaml <<EOF
 creation_rules:
   - path_regex: .*/secrets/.*\.yaml$
@@ -111,7 +111,7 @@ git push
 - [x] SOPS CLI installed and verified
 - [x] age installed — `age-keygen` available
 - [x] age key pair generated — public key exported to `$AGE_PUBLIC_KEY`
-- [x] `.sops.yaml` committed to `fleet-infra` — encryption rules defined
+- [x] `.sops.yaml` committed to ` flux-gitops` — encryption rules defined
 - [x] Private key secured and excluded from Git via `.gitignore`
 
 ---
@@ -133,8 +133,8 @@ git push
 Organize your secrets in a dedicated path that matches your `.sops.yaml` regex.
 
 ```bash
-# Inside your fleet-infra repo
-mkdir -p clusters/my-cluster/secrets
+# Inside your  flux-gitops repo
+mkdir -p clusters/production/secrets
 
 # The .sops.yaml path_regex matches: .*/secrets/.*\.yaml$
 # Any YAML file inside a 'secrets' directory will be auto-encrypted
@@ -147,8 +147,8 @@ mkdir -p clusters/my-cluster/secrets
 Write the plaintext secret manifest before encryption.
 
 ```bash
-mkdir clusters/my-cluster/secrets
-cat > clusters/my-cluster/secrets/db-credentials.yaml <<EOF
+mkdir clusters/production/secrets
+cat > clusters/production/secrets/db-credentials.yaml <<EOF
 apiVersion: v1
 kind: Secret
 metadata:
@@ -174,10 +174,10 @@ Run `sops --encrypt` to encrypt the secret values in-place.
 
 ```bash
 # Encrypt in-place using the age public key from .sops.yaml
-sops --encrypt --in-place clusters/my-cluster/secrets/db-credentials.yaml
+sops --encrypt --in-place clusters/production/secrets/db-credentials.yaml
 
 # Verify the file is now encrypted
-cat clusters/my-cluster/secrets/db-credentials.yaml
+cat clusters/production/secrets/db-credentials.yaml
 ```
 
 After encryption, the file will look like this:
@@ -213,7 +213,7 @@ Use `sops` (without `--encrypt`) to open, edit, and re-save an encrypted file.
 ```bash
 # SOPS decrypts, opens your $EDITOR, then re-encrypts on save
 export SOPS_AGE_KEY_FILE=path/of/the/key/age.agekey
-sops clusters/my-cluster/secrets/db-credentials.yaml
+sops clusters/production/secrets/db-credentials.yaml
 
 # Change a value, save, and SOPS re-encrypts automatically
 # NEVER manually edit the ENC[...] ciphertext
@@ -226,12 +226,12 @@ sops clusters/my-cluster/secrets/db-credentials.yaml
 The encrypted file is safe to commit — no secrets are exposed.
 
 ```bash
-git add clusters/my-cluster/secrets/db-credentials.yaml
+git add clusters/production/secrets/db-credentials.yaml
 git commit -m 'feat: add encrypted db-credentials secret'
 git push
 
 # Verify the commit contains only encrypted values
-git show HEAD:clusters/my-cluster/secrets/db-credentials.yaml | grep DATABASE
+git show HEAD:clusters/production/secrets/db-credentials.yaml | grep DATABASE
 ```
 
 ---
@@ -291,8 +291,8 @@ kubectl get secret sops-age -n flux-system \
 Add a `decryption` block to your Kustomization resource pointing to the `sops-age` secret.
 
 ```bash
-# clusters/my-cluster/secrets-kustomization.yaml
-cat > clusters/my-cluster/secrets-kustomization.yaml <<EOF
+# clusters/production/secrets-kustomization.yaml
+cat > clusters/production/secrets-kustomization.yaml <<EOF
 ---
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
@@ -301,7 +301,7 @@ metadata:
   namespace: flux-system
 spec:
   interval: 5m
-  path: ./clusters/my-cluster/secrets
+  path: ./clusters/production/secrets
   prune: true
   sourceRef:
     kind: GitRepository
@@ -325,7 +325,7 @@ EOF
 Pushing triggers Flux to pick up the new Kustomization and start decrypting secrets.
 
 ```bash
-git add clusters/my-cluster/secrets-kustomization.yaml
+git add clusters/production/secrets-kustomization.yaml
 git commit -m 'feat: add secrets Kustomization with SOPS decryption'
 git push
 
